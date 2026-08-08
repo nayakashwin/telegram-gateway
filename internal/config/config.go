@@ -30,6 +30,7 @@ type Config struct {
 	AllowInsecureDB bool
 
 	APIKey         string
+	LegacyAPIKey   string // optional, accepted during key rotation
 	APIAddress     string
 	MetricsAddress string
 
@@ -79,20 +80,24 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	legacyKey := os.Getenv("GATEWAY_API_KEY_LEGACY")
 
 	cfg := &Config{
 		TelegramToken:   token,
 		DatabaseURL:     dbURL,
 		APIKey:          apiKey,
+		LegacyAPIKey:    legacyKey,
 		APIAddress:      getenvDefault("GATEWAY_API_ADDRESS", ":8080"),
 		MetricsAddress:  getenvDefault("METRICS_ADDRESS", ":9100"),
 		AllowInsecureDB: getenvBool("ALLOW_INSECURE_DB_TLS"),
-		RateLimitRPS:    getenvFloat("RATE_LIMIT_RPS", 0),
-		RateLimitBurst:  getenvInt("RATE_LIMIT_BURST", 0),
-		PollInterval:    getenvInt64("POLL_INTERVAL_SECONDS", 5),
-		RetryInterval:   getenvInt64("RETRY_INTERVAL_SECONDS", 10),
-		MaxRetries:      getenvInt("MAX_RETRIES", 5),
-		RetryBackoff:    getenvInt64("RETRY_BACKOFF_SECONDS", 30),
+		// Rate limiting is ON by default (50 rps, 100 burst); set
+		// RATE_LIMIT_RPS=0 to disable explicitly.
+		RateLimitRPS:   getenvFloat("RATE_LIMIT_RPS", 50),
+		RateLimitBurst: getenvInt("RATE_LIMIT_BURST", 100),
+		PollInterval:   getenvInt64("POLL_INTERVAL_SECONDS", 5),
+		RetryInterval:  getenvInt64("RETRY_INTERVAL_SECONDS", 10),
+		MaxRetries:     getenvInt("MAX_RETRIES", 5),
+		RetryBackoff:   getenvInt64("RETRY_BACKOFF_SECONDS", 30),
 	}
 
 	if cfg.LogLevel, err = parseLogLevel(os.Getenv("LOG_LEVEL")); err != nil {

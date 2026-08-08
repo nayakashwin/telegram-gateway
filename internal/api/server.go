@@ -104,16 +104,18 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	return ListenAndServe(ctx, s.cfg.APIAddress, s.Handler(), 10*time.Second)
 }
 
-// apiKeyAuth guards all routes except /healthz and /metrics with a
-// constant-time API key comparison.
+// apiKeyAuth guards all routes except /healthz with a constant-time API key
+// comparison. When /metrics shares the API port (MetricsAddress == ""), it is
+// guarded too; otherwise the standalone metrics server is exposed separately.
 func (s *Server) apiKeyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
+		if r.URL.Path == "/healthz" {
 			next.ServeHTTP(w, r)
 			return
 		}
 		got := r.Header.Get("X-API-Key")
-		if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.APIKey)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.APIKey)) != 1 &&
+			(s.cfg.LegacyAPIKey == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.LegacyAPIKey)) != 1) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

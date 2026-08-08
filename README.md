@@ -142,6 +142,7 @@ supplied via `_FILE` env vars (see [Production secrets](#7-production-secrets-op
 | `TELEGRAM_BOT_TOKEN` | yes | — | Bot token from @BotFather (format `<bot_id>:<token>`) |
 | `TELEGRAM_CHAT_IDS` | yes | — | Comma-separated whitelist of allowed chat/user ids |
 | `GATEWAY_API_KEY` | yes | — | API key for `X-API-Key` header. **≥16 chars**, not a weak value |
+| `GATEWAY_API_KEY_LEGACY` | no | — | Optional previous API key, accepted during key rotation |
 | `DATABASE_URL` | yes | — | Postgres connection string. Non-local hosts must use `sslmode=require` or `verify-full` |
 | `POSTGRES_DB` | no | `gateway` | Name of the database created by the compose `db` service |
 | `POSTGRES_USER` | no | `gateway` | Database user created by the compose `db` service |
@@ -151,8 +152,8 @@ supplied via `_FILE` env vars (see [Production secrets](#7-production-secrets-op
 | `GATEWAY_API_ADDRESS` | no | `:8080` | API listen address when running **outside** compose (compose derives this from `GATEWAY_API_PORT`) |
 | `METRICS_ADDRESS` | no | `:9100` | Metrics listen address outside compose; set empty to serve `/metrics` on the API port |
 | `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, or `error` |
-| `RATE_LIMIT_RPS` | no | `0` | API rate limit (requests/sec); `0` = disabled |
-| `RATE_LIMIT_BURST` | no | `ceil(RPS)` | Rate-limit burst size |
+| `RATE_LIMIT_RPS` | no | `50` | API rate limit (requests/sec); `0` = disabled |
+| `RATE_LIMIT_BURST` | no | `100` | Rate-limit burst size |
 | `DB_POOL_MIN_CONNS` | no | `1` | pgx pool min connections |
 | `DB_POOL_MAX_CONNS` | no | `10` | pgx pool max connections |
 | `DB_POOL_MAX_CONN_LIFETIME` | no | `30m` | Pool connection max lifetime |
@@ -213,8 +214,10 @@ If a port is already in use on the target server, change the value in `.env`
 
 ## REST API
 
-All endpoints require `X-API-Key: <GATEWAY_API_KEY>` except `/healthz` and
-`/metrics`. Every response includes an `X-Request-ID` for log correlation.
+All endpoints require `X-API-Key: <GATEWAY_API_KEY>` except `/healthz`. The
+`/metrics` endpoint is **also protected** when it shares the API port (set
+`METRICS_ADDRESS` to an empty value to serve it there; otherwise it runs on a
+separate port). Every response includes an `X-Request-ID` for log correlation.
 
 ### `GET /healthz`
 
@@ -489,8 +492,7 @@ gunzip -c /backups/gateway-2026-08-08.sql.gz | \
   pin the CA (`sslmode=verify-full`) or terminate TLS with a trusted cert.
 - Inbound messages are accepted **only** from `TELEGRAM_CHAT_IDS`.
 - Secrets (`secrets/`, `db-certs/`, `.env`) are gitignored.
-- Rate limiting is opt-in (`RATE_LIMIT_RPS`); enable it for publicly exposed
-  deployments.
+- Rate limiting is on by default (50 rps / 100 burst); set `RATE_LIMIT_RPS=0` to disable.
 
 ## Testing
 

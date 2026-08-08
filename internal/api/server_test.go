@@ -251,7 +251,10 @@ func TestMetricsEndpoint(t *testing.T) {
 	// Make a request so the middleware materializes http_requests_total.
 	doReq(t, http.MethodGet, srv.URL+"/healthz", "", "")
 
-	resp, err := http.Get(srv.URL + "/metrics")
+	// /metrics shares the API port, so it requires the API key.
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/metrics", nil)
+	req.Header.Set("X-API-Key", "0123456789abcdef")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET metrics: %v", err)
 	}
@@ -265,6 +268,12 @@ func TestMetricsEndpoint(t *testing.T) {
 		if !strings.Contains(body, name) {
 			t.Errorf("metrics missing %q", name)
 		}
+	}
+
+	// Without the key, /metrics must be rejected.
+	code, _ := doReq(t, http.MethodGet, srv.URL+"/metrics", "", "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated metrics = %d, want 401", code)
 	}
 }
 
@@ -316,6 +325,36 @@ func TestRequestIDSanitized(t *testing.T) {
 	// A valid client-supplied id is still honored.
 	if got := inject("abc-123"); got != "abc-123" {
 		t.Errorf("valid request id = %q, want abc-123", got)
+	}
+}
+
+func TestLegacyAPIKeyAccepted(t *testing.T) {
+	cfg := &config.Config{
+		TelegramToken: "123456:TEST",
+		ChatIDs:       []int64{111},
+		DatabaseURL:   "ignored",
+		APIKey:        "0123456789abcdef",
+		LegacyAPIKey:  "fedcba9876543210",
+		RateLimitRPS:  0, // disable for this test
+	}
+	st := testdb.NewStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(New(cfg, st, logger, nil).Handler())
+	t.Cleanup(srv.Close)
+
+	// Both the current and legacy keys work.
+	code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/messages", "", "0123456789abcdef")
+	if code != http.StatusOK {
+		t.Fatalf("current key = %d, want 200", code)
+	}
+	code, _ = doReq(t, http.MethodGet, srv.URL+"/api/v1/messages", "", "fedcba9876543210")
+	if code != http.StatusOK {
+		t.Fatalf("legacy key = %d, want 200", code)
+	}
+	// An unknown key is still rejected.
+	code, _ = doReq(t, http.MethodGet, srv.URL+"/api/v1/messages", "", "0000000000000000")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("unknown key = %d, want 401", code)
 	}
 }
 

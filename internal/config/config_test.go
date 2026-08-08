@@ -48,8 +48,26 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DBPool.MaxConns != 10 || cfg.DBPool.MaxConnLifetime != 30*time.Minute {
 		t.Errorf("DBPool defaults = %+v", cfg.DBPool)
 	}
-	if cfg.RateLimitRPS != 0 {
-		t.Errorf("RateLimitRPS default = %v, want 0", cfg.RateLimitRPS)
+	if cfg.RateLimitRPS != 50 {
+		t.Errorf("RateLimitRPS default = %v, want 50", cfg.RateLimitRPS)
+	}
+	if cfg.RateLimitBurst != 100 {
+		t.Errorf("RateLimitBurst default = %d, want 100", cfg.RateLimitBurst)
+	}
+	if cfg.LegacyAPIKey != "" {
+		t.Errorf("LegacyAPIKey default = %q, want empty", cfg.LegacyAPIKey)
+	}
+}
+
+func TestLoadLegacyAPIKey(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("GATEWAY_API_KEY_LEGACY", "fedcba9876543210")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LegacyAPIKey != "fedcba9876543210" {
+		t.Errorf("LegacyAPIKey = %q, want fedcba9876543210", cfg.LegacyAPIKey)
 	}
 }
 
