@@ -145,7 +145,7 @@ supplied via `_FILE` env vars (see [Production secrets](#7-production-secrets-op
 | `DATABASE_URL` | yes | — | Postgres connection string. Non-local hosts must use `sslmode=require` or `verify-full` |
 | `POSTGRES_DB` | no | `gateway` | Name of the database created by the compose `db` service |
 | `POSTGRES_USER` | no | `gateway` | Database user created by the compose `db` service |
-| `POSTGRES_PASSWORD` | no | `gateway` | Password for the compose `db` service. **Change per deployment** |
+| `POSTGRES_PASSWORD` | **yes** | — | Password for the compose `db` service. **Required** — compose fails to start without it. Use `openssl rand -hex 24` |
 | `GATEWAY_API_PORT` | no | `8080` | Host port for the REST API (compose) |
 | `METRICS_PORT` | no | `9100` | Host port for Prometheus metrics (compose) |
 | `GATEWAY_API_ADDRESS` | no | `:8080` | API listen address when running **outside** compose (compose derives this from `GATEWAY_API_PORT`) |
@@ -279,8 +279,10 @@ curl -H "X-API-Key: $GATEWAY_API_KEY" http://localhost:8090/api/v1/outbox/1
 
 The schema is applied automatically on startup (idempotent, advisory-locked).
 The compose Postgres runs with **TLS enabled** on an isolated network, with a
-**read-only root filesystem** and a configurable database name, user, and
-password (`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD` in `.env`).
+**read-only root filesystem**, a configurable database name, user, and
+password (`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD` in `.env`), and
+**scram-sha-256 auth for all connections** (no `trust` — a hardened
+`pg_hba.conf` is mounted).
 
 - `incoming_messages` — messages received from Telegram
   (`id, chat_id, from_id, from_name, text, status, created_at`)
