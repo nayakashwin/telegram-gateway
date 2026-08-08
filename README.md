@@ -466,11 +466,29 @@ gunzip -c /backups/gateway-2026-08-08.sql.gz | \
 
 ### Rotating secrets
 
-1. Update the value in `.env` (or the secret file).
-2. Recreate: `docker compose up -d` (or `--force-recreate gateway`).
+**API key** (zero-downtime):
+
+1. Generate a new key: `openssl rand -hex 32`.
+2. Set the old key as `GATEWAY_API_KEY_LEGACY` and the new key as
+   `GATEWAY_API_KEY` in `.env`, then `docker compose up -d --force-recreate gateway`.
+3. Migrate consumers to the new key.
+4. Remove `GATEWAY_API_KEY_LEGACY` and recreate again.
+
+**Bot token** (requires @BotFather):
+
+1. Generate a new token with [@BotFather](https://t.me/BotFather) (`/revoke` or a new bot).
+2. Update `TELEGRAM_BOT_TOKEN` in `.env` (or the secret file), then
+   `docker compose up -d --force-recreate gateway`.
 3. Verify `/healthz` and a test send.
-4. Revoke the old Telegram token via @BotFather; rotate the DB password by
-   updating `POSTGRES_PASSWORD` and the `DATABASE_URL` accordingly.
+4. The old token is dead once revoked in BotFather.
+
+**DB password / TLS certs**:
+
+- Password: update `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env`; to
+  re-apply to an existing volume, change it in Postgres first
+  (`ALTER USER gateway PASSWORD '...'`) or recreate the volume (data loss).
+- Certs: delete `db-certs/`, re-run `scripts/gen-db-certs.sh`, then
+  `docker compose up -d --force-recreate db gateway`.
 
 ### Troubleshooting
 
