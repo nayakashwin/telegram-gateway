@@ -1,0 +1,17 @@
+# Environment & secrets
+.env
+secrets/
+db-certs/
+
+# Build artifacts
+bin/
+dist/
+
+# Go
+*.test
+*.out
+
+# Editor & tooling
+.idea/
+.vscode/
+.commandcode/
