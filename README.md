@@ -289,11 +289,14 @@ password (`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD` in `.env`), and
 `pg_hba.conf` is mounted).
 
 - `incoming_messages` — messages received from Telegram
-  (`id, chat_id, from_id, from_name, text, status, created_at`)
+  (`id, chat_id, from_id, from_name, text, status, received_at, created_at`)
+  - `received_at` is when the message arrived from Telegram.
 - `outbox` — outbound queue
-  (`id, chat_id, text, status, attempts, error_message, source, locked_until, created_at, updated_at`)
+  (`id, chat_id, text, status, attempts, error_message, source, sent_at, locked_until, created_at, updated_at`)
   - `source` records the origin of the message (`api` from the REST API,
     `unknown` for legacy/direct rows) so forged sends can be distinguished.
+  - `sent_at` is when the message was actually delivered to Telegram
+    (NULL until then); `created_at` is when it was queued.
   - Inserting fires `pg_notify('outbox_channel')`.
 
 Send without the REST API:

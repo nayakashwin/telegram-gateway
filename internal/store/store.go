@@ -20,26 +20,28 @@ var (
 
 // Message is a single Telegram message stored by the gateway.
 type Message struct {
-	ID        int64     `json:"id"`
-	ChatID    int64     `json:"chat_id"`
-	FromID    int64     `json:"from_id"`
-	FromName  string    `json:"from_name"`
-	Text      string    `json:"text"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         int64     `json:"id"`
+	ChatID     int64     `json:"chat_id"`
+	FromID     int64     `json:"from_id"`
+	FromName   string    `json:"from_name"`
+	Text       string    `json:"text"`
+	Status     string    `json:"status"`
+	ReceivedAt time.Time `json:"received_at"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // OutboxItem is a row in the outbox queue waiting to be sent to Telegram.
 type OutboxItem struct {
-	ID           int64     `json:"id"`
-	ChatID       int64     `json:"chat_id"`
-	Text         string    `json:"text"`
-	Status       string    `json:"status"`
-	ErrorMessage string    `json:"error_message,omitempty"`
-	Attempts     int       `json:"attempts"`
-	Source       string    `json:"source"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           int64      `json:"id"`
+	ChatID       int64      `json:"chat_id"`
+	Text         string     `json:"text"`
+	Status       string     `json:"status"`
+	ErrorMessage string     `json:"error_message,omitempty"`
+	Attempts     int        `json:"attempts"`
+	Source       string     `json:"source"`
+	SentAt       *time.Time `json:"sent_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // PoolConfig tunes the pgx connection pool.
@@ -133,17 +135,19 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS incoming_messages (
-    id         BIGSERIAL PRIMARY KEY,
-    chat_id    BIGINT NOT NULL,
-    from_id    BIGINT NOT NULL,
-    from_name  TEXT NOT NULL DEFAULT '',
-    text       TEXT NOT NULL DEFAULT '',
-    status     TEXT NOT NULL DEFAULT 'received',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    id          BIGSERIAL PRIMARY KEY,
+    chat_id     BIGINT NOT NULL,
+    from_id     BIGINT NOT NULL,
+    from_name   TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'received',
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_incoming_created ON incoming_messages (created_at);
 CREATE INDEX IF NOT EXISTS idx_incoming_chat_created ON incoming_messages (chat_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_incoming_from_created ON incoming_messages (from_id, created_at DESC);
+ALTER TABLE incoming_messages ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE TABLE IF NOT EXISTS outbox (
     id            BIGSERIAL PRIMARY KEY,
@@ -152,11 +156,13 @@ CREATE TABLE IF NOT EXISTS outbox (
     status        TEXT NOT NULL DEFAULT 'pending',
     attempts      INT NOT NULL DEFAULT 0,
     error_message TEXT NOT NULL DEFAULT '',
+    sent_at       TIMESTAMPTZ,
     locked_until  TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox (status, id);
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
 
 -- Source attribution: where an outbound message originated. 'api' = REST API,
 -- 'internal' = direct DB insert by the application. Helps detect forged sends.
@@ -189,14 +195,22 @@ func (s *Store) Close() {
 func (s *Store) InsertIncoming(ctx context.Context, m Message) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO incoming_messages (chat_id, from_id, from_name, text, status)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		m.ChatID, m.FromID, m.FromName, m.Text, m.Status,
+		`INSERT INTO incoming_messages (chat_id, from_id, from_name, text, status, received_at)
+		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, now())) RETURNING id`,
+		m.ChatID, m.FromID, m.FromName, m.Text, m.Status, nullIfZero(m.ReceivedAt),
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert incoming: %w", err)
 	}
 	return id, nil
+}
+
+// nullIfZero returns nil for the zero time so COALESCE can default to now().
+func nullIfZero(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }
 
 // InsertOutbox queues a message for sending. source records where the
@@ -230,9 +244,9 @@ func (s *Store) ClaimNextOutbox(ctx context.Context, now time.Time, retryBackoff
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING id, chat_id, text, status, attempts, error_message, source, created_at`,
+		RETURNING id, chat_id, text, status, attempts, error_message, source, sent_at, created_at`,
 		now, retryBackoff,
-	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.CreatedAt)
+	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.SentAt, &item.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -242,10 +256,10 @@ func (s *Store) ClaimNextOutbox(ctx context.Context, now time.Time, retryBackoff
 	return &item, nil
 }
 
-// MarkOutboxSent marks an outbox row as sent.
+// MarkOutboxSent marks an outbox row as sent and records the delivery time.
 func (s *Store) MarkOutboxSent(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE outbox SET status = 'sent', error_message = '', updated_at = now() WHERE id = $1`, id)
+		`UPDATE outbox SET status = 'sent', error_message = '', sent_at = now(), updated_at = now() WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("mark outbox sent: %w", err)
 	}
@@ -302,7 +316,7 @@ func (s *Store) ResetExpiredLocks(ctx context.Context, now time.Time) error {
 // ListIncoming returns recent incoming messages, newest first.
 func (s *Store) ListIncoming(ctx context.Context, limit int) ([]Message, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, chat_id, from_id, from_name, text, status, created_at
+		SELECT id, chat_id, from_id, from_name, text, status, received_at, created_at
 		FROM incoming_messages ORDER BY id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list incoming: %w", err)
@@ -312,7 +326,7 @@ func (s *Store) ListIncoming(ctx context.Context, limit int) ([]Message, error) 
 	msgs := []Message{}
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.ChatID, &m.FromID, &m.FromName, &m.Text, &m.Status, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.FromID, &m.FromName, &m.Text, &m.Status, &m.ReceivedAt, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan incoming: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -339,7 +353,7 @@ func (s *Store) QueryIncoming(ctx context.Context, f IncomingFilter) ([]Message,
 		f.Limit = 50
 	}
 
-	query := `SELECT id, chat_id, from_id, from_name, text, status, created_at
+	query := `SELECT id, chat_id, from_id, from_name, text, status, received_at, created_at
 	          FROM incoming_messages WHERE true`
 	var args []any
 	n := 1
@@ -381,7 +395,7 @@ func (s *Store) QueryIncoming(ctx context.Context, f IncomingFilter) ([]Message,
 	msgs := []Message{}
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.ChatID, &m.FromID, &m.FromName, &m.Text, &m.Status, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.FromID, &m.FromName, &m.Text, &m.Status, &m.ReceivedAt, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan incoming: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -396,9 +410,9 @@ func (s *Store) QueryIncoming(ctx context.Context, f IncomingFilter) ([]Message,
 func (s *Store) GetOutbox(ctx context.Context, id int64) (*OutboxItem, error) {
 	var item OutboxItem
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, chat_id, text, status, attempts, error_message, source, created_at, updated_at
+		SELECT id, chat_id, text, status, attempts, error_message, source, sent_at, created_at, updated_at
 		FROM outbox WHERE id = $1`, id,
-	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.CreatedAt, &item.UpdatedAt)
+	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.SentAt, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNoRows

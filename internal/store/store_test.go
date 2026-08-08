@@ -45,6 +45,9 @@ func TestIncomingLifecycle(t *testing.T) {
 	if got.Status != "received" {
 		t.Errorf("status = %q", got.Status)
 	}
+	if got.ReceivedAt.IsZero() {
+		t.Error("received_at should be populated")
+	}
 }
 
 func TestOutboxSendFlow(t *testing.T) {
@@ -78,6 +81,15 @@ func TestOutboxSendFlow(t *testing.T) {
 
 	if err := st.MarkOutboxSent(ctx, id); err != nil {
 		t.Fatalf("MarkOutboxSent: %v", err)
+	}
+
+	// sent_at should be recorded on delivery.
+	sentItem, err := st.GetOutbox(ctx, id)
+	if err != nil {
+		t.Fatalf("GetOutbox after sent: %v", err)
+	}
+	if sentItem.SentAt == nil || sentItem.SentAt.IsZero() {
+		t.Error("sent_at should be populated after MarkOutboxSent")
 	}
 
 	// Sent rows are not claimable.
