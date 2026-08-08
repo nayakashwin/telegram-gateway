@@ -59,8 +59,11 @@ services:
     build: .
     env_file:
       - .env
+    volumes:
+      # CA used to verify the Postgres server certificate (sslmode=verify-full).
+      - ./db-certs/ca.crt:/certs/ca.crt:ro
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@db:5432/${POSTGRES_DB:-gateway}?sslmode=require
+      DATABASE_URL: postgres://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@db:5432/${POSTGRES_DB:-gateway}?sslmode=verify-full&sslrootcert=/certs/ca.crt
       ALLOW_INSECURE_DB_TLS: "false"
       # Single knob for the published port; the container listens on the same
       # port so host and container stay consistent.

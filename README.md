@@ -378,12 +378,15 @@ METRICS_PORT=9100            # change if 9100 is taken
 ./scripts/gen-db-certs.sh
 ```
 
-This writes self-signed certs to `db-certs/` (gitignored). The certs are
+This writes a **CA** (`ca.crt`) and a **server certificate** (`server.crt`,
+`signed by the CA, CN=db with SAN`) to `db-certs/` (gitignored). The certs are
 mounted into the `db` container, chowned to the postgres user at startup, and
-Postgres runs with `ssl=on`. The gateway connects with `sslmode=require`.
+Postgres runs with `ssl=on`. The gateway connects with
+**`sslmode=verify-full`** and pins `ca.crt` as the trust root — the DB server
+is authenticated, not just encrypted, so a MITM cannot impersonate it.
 
-> For a production domain you can replace these with a real CA-signed
-> certificate for `CN=db` and switch the gateway URL to `sslmode=verify-full`.
+> Rotate the certs by deleting `db-certs/` and re-running the script, then
+> `docker compose up -d --force-recreate db gateway`.
 
 ### 5. Start the stack
 
@@ -490,8 +493,9 @@ gunzip -c /backups/gateway-2026-08-08.sql.gz | \
   `cap_drop: ALL`, `no-new-privileges`, and memory/CPU limits.
 - Postgres is not exposed on the host — only reachable on the internal Docker
   network, over TLS.
-- The compose Postgres uses self-signed certs; for real deployments either
-  pin the CA (`sslmode=verify-full`) or terminate TLS with a trusted cert.
+- The compose Postgres uses a CA-signed certificate with the gateway pinning
+  the CA (`sslmode=verify-full`); rotate the CA/certs via
+  `scripts/gen-db-certs.sh`.
 - Inbound messages are accepted **only** from `TELEGRAM_CHAT_IDS`.
 - Secrets (`secrets/`, `db-certs/`, `.env`) are gitignored.
 - Rate limiting is on by default (50 rps / 100 burst); set `RATE_LIMIT_RPS=0` to disable.
