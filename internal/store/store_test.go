@@ -51,7 +51,7 @@ func TestOutboxSendFlow(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, err := st.InsertOutbox(ctx, 42, "out")
+	id, err := st.InsertOutbox(ctx, 42, "out", "test")
 	if err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestOutboxRetryBackoff(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, _ := st.InsertOutbox(ctx, 42, "retry me")
+	id, _ := st.InsertOutbox(ctx, 42, "retry me", "test")
 	item, _ := st.ClaimNextOutbox(ctx, time.Now(), 30)
 	if err := st.MarkOutboxFailed(ctx, id, item.Attempts+1, 3, 30, "boom"); err != nil {
 		t.Fatalf("MarkOutboxFailed: %v", err)
@@ -128,7 +128,7 @@ func TestOutboxDeadLetter(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, _ := st.InsertOutbox(ctx, 42, "will die")
+	id, _ := st.InsertOutbox(ctx, 42, "will die", "test")
 	item, _ := st.ClaimNextOutbox(ctx, time.Now(), 1)
 	if err := st.MarkOutboxFailed(ctx, id, item.Attempts+1, 1, 1, "fatal"); err != nil {
 		t.Fatalf("MarkOutboxFailed: %v", err)
@@ -147,7 +147,7 @@ func TestResetExpiredLocks(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, _ := st.InsertOutbox(ctx, 42, "stuck")
+	id, _ := st.InsertOutbox(ctx, 42, "stuck", "test")
 	// Claim with a zero backoff, simulating a worker that died mid-send.
 	if _, err := st.ClaimNextOutbox(ctx, time.Now(), 0); err != nil {
 		t.Fatalf("claim: %v", err)
@@ -193,7 +193,7 @@ func TestNotifyFires(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 
-	if _, err := st.InsertOutbox(ctx, 42, "notify me"); err != nil {
+	if _, err := st.InsertOutbox(ctx, 42, "notify me", "test"); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 
@@ -248,7 +248,7 @@ func TestGetOutbox(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, err := st.InsertOutbox(ctx, 42, "track")
+	id, err := st.InsertOutbox(ctx, 42, "track", "test")
 	if err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
@@ -258,6 +258,9 @@ func TestGetOutbox(t *testing.T) {
 	}
 	if item.Status != "pending" || item.ChatID != 42 {
 		t.Errorf("item = %+v", item)
+	}
+	if item.Source != "test" {
+		t.Errorf("source = %q, want test", item.Source)
 	}
 
 	if _, err := st.GetOutbox(ctx, 999999); err != store.ErrNoRows {
@@ -269,8 +272,8 @@ func TestOutboxStatusCounts(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	_, _ = st.InsertOutbox(ctx, 42, "one")
-	_, _ = st.InsertOutbox(ctx, 42, "two")
+	_, _ = st.InsertOutbox(ctx, 42, "one", "test")
+	_, _ = st.InsertOutbox(ctx, 42, "two", "test")
 
 	counts, err := st.OutboxStatusCounts(ctx)
 	if err != nil {

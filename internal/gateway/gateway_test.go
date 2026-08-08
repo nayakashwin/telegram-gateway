@@ -206,7 +206,7 @@ func TestOutboxDeliverySuccess(t *testing.T) {
 	go g.pollLoop(ctx)
 	defer cancel()
 
-	if _, err := st.InsertOutbox(ctx, 111, "hello out"); err != nil {
+	if _, err := st.InsertOutbox(ctx, 111, "hello out", "test"); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestOutboxDeliveryFailureRetriesThenDead(t *testing.T) {
 	fake.sendFail = "chat not found"
 	fake.mu.Unlock()
 
-	id, err := st.InsertOutbox(ctx, 111, "doomed")
+	id, err := st.InsertOutbox(ctx, 111, "doomed", "test")
 	if err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestMetricsObservedOnOutbox(t *testing.T) {
 	ctx := context.Background()
 
 	// Success path.
-	if _, err := st.InsertOutbox(ctx, 111, "metric one"); err != nil {
+	if _, err := st.InsertOutbox(ctx, 111, "metric one", "test"); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 	g.processOutbox(ctx)
@@ -276,7 +276,7 @@ func TestMetricsObservedOnOutbox(t *testing.T) {
 	fake.mu.Lock()
 	fake.sendFail = "boom"
 	fake.mu.Unlock()
-	if _, err := st.InsertOutbox(ctx, 111, "metric two"); err != nil {
+	if _, err := st.InsertOutbox(ctx, 111, "metric two", "test"); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 	g.processOutbox(ctx)

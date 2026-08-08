@@ -218,7 +218,7 @@ func TestQueryMessagesFilters(t *testing.T) {
 func TestGetOutboxByID(t *testing.T) {
 	srv, st := newTestServer(t)
 
-	id, err := st.InsertOutbox(context.Background(), 111, "track me")
+	id, err := st.InsertOutbox(context.Background(), 111, "track me", "test")
 	if err != nil {
 		t.Fatalf("insert outbox: %v", err)
 	}
@@ -230,6 +230,9 @@ func TestGetOutboxByID(t *testing.T) {
 	}
 	if body["status"] != "pending" {
 		t.Errorf("status = %v", body["status"])
+	}
+	if body["source"] != "test" {
+		t.Errorf("source = %v, want test", body["source"])
 	}
 
 	// Missing -> 404.

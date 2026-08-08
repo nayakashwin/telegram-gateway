@@ -240,7 +240,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := s.store.InsertOutbox(r.Context(), req.ChatID, req.Text)
+	id, err := s.store.InsertOutbox(r.Context(), req.ChatID, req.Text, "api")
 	if err != nil {
 		s.logger.Error("enqueue send", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue message")
@@ -251,6 +251,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		"id":      id,
 		"status":  "queued",
 		"chat_id": req.ChatID,
+		"source":  "api",
 	})
 }
 
