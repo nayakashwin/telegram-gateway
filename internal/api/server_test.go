@@ -283,6 +283,42 @@ func TestRequestIDEchoed(t *testing.T) {
 	}
 }
 
+func TestRequestIDSanitized(t *testing.T) {
+	// Build the middleware chain directly so a control-char payload reaches it
+	// without http.Transport header validation.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	chain := requestLogMiddleware(logger, inner)
+
+	inject := func(id string) string {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		// Use the canonical key so r.Header.Get finds it. Header values with
+		// control chars are legal in a raw map (only http.Transport rejects
+		// them), so the injection payload reaches the middleware.
+		req.Header["X-Request-Id"] = []string{id}
+		rr := httptest.NewRecorder()
+		chain.ServeHTTP(rr, req)
+		return rr.Header().Get("X-Request-ID")
+	}
+
+	if got := inject("good-id\nfake-msg=injected"); got == "good-id\nfake-msg=injected" {
+		t.Fatal("unsanitized request id was echoed")
+	} else if len(got) != 16 {
+		t.Errorf("injected request id = %q, want 16-char server id", got)
+	}
+
+	if got := inject(strings.Repeat("a", 100)); len(got) != 16 {
+		t.Errorf("oversized request id not replaced: %q", got)
+	}
+
+	// A valid client-supplied id is still honored.
+	if got := inject("abc-123"); got != "abc-123" {
+		t.Errorf("valid request id = %q, want abc-123", got)
+	}
+}
+
 func TestRateLimit(t *testing.T) {
 	cfg := &config.Config{
 		TelegramToken:  "123456:TEST",

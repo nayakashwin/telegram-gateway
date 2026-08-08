@@ -13,10 +13,32 @@ import (
 // requestIDKey is the context key holding the request id.
 type requestIDKey struct{}
 
+// requestIDMaxLen caps client-supplied request ids to prevent log abuse.
+const requestIDMaxLen = 64
+
+// sanitizeRequestID validates a client-supplied request id. Only a limited
+// charset (hex, dashes, dots, underscores, colons, alphanumerics) is accepted;
+// anything else is replaced with a fresh server-generated id so the value can
+// never inject newlines or bogus structure into structured logs.
+func sanitizeRequestID(id string) string {
+	if len(id) > requestIDMaxLen {
+		return ""
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.' || r == ':':
+		default:
+			return ""
+		}
+	}
+	return id
+}
+
 // requestLogMiddleware injects an X-Request-ID and logs an access line.
 func requestLogMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get("X-Request-ID")
+		id := sanitizeRequestID(r.Header.Get("X-Request-ID"))
 		if id == "" {
 			id = newRequestID()
 		}
