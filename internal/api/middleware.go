@@ -107,3 +107,35 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// concurrencyLimiter bounds in-flight requests to a semaphore so a flood of
+// DB-backed requests cannot exhaust the connection pool and stall the
+// gateway's poll loop and outbox worker (which share the pool).
+type concurrencyLimiter struct {
+	sem chan struct{}
+}
+
+// newConcurrencyLimiter returns a limiter; n <= 0 disables it.
+func newConcurrencyLimiter(n int) *concurrencyLimiter {
+	if n <= 0 {
+		return nil
+	}
+	return &concurrencyLimiter{sem: make(chan struct{}, n)}
+}
+
+func (cl *concurrencyLimiter) middleware(next http.Handler) http.Handler {
+	if cl == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case cl.sem <- struct{}{}:
+			defer func() { <-cl.sem }()
+			next.ServeHTTP(w, r)
+		default:
+			// Server is at capacity; tell the client to back off.
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusServiceUnavailable, "server busy")
+		}
+	})
+}

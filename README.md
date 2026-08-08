@@ -154,6 +154,7 @@ supplied via `_FILE` env vars (see [Production secrets](#7-production-secrets-op
 | `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, or `error` |
 | `RATE_LIMIT_RPS` | no | `50` | API rate limit (requests/sec); `0` = disabled |
 | `RATE_LIMIT_BURST` | no | `100` | Rate-limit burst size |
+| `MAX_CONCURRENT_REQUESTS` | no | `8` | Max in-flight DB-backed API requests; prevents pool exhaustion |
 | `DB_POOL_MIN_CONNS` | no | `1` | pgx pool min connections |
 | `DB_POOL_MAX_CONNS` | no | `10` | pgx pool max connections |
 | `DB_POOL_MAX_CONN_LIFETIME` | no | `30m` | Pool connection max lifetime |

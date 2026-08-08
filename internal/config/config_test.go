@@ -57,6 +57,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LegacyAPIKey != "" {
 		t.Errorf("LegacyAPIKey default = %q, want empty", cfg.LegacyAPIKey)
 	}
+	if cfg.MaxConcurrentRequests != 8 {
+		t.Errorf("MaxConcurrentRequests default = %d, want 8", cfg.MaxConcurrentRequests)
+	}
 }
 
 func TestLoadLegacyAPIKey(t *testing.T) {

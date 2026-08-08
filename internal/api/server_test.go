@@ -361,6 +361,54 @@ func TestLegacyAPIKeyAccepted(t *testing.T) {
 	}
 }
 
+func TestConcurrencyLimit(t *testing.T) {
+	// Test the middleware directly: with a limit of 1, holding the slot via a
+	// blocking handler makes a second request fail with 503.
+	started := make(chan struct{})
+	release := make(chan struct{})
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Hold") == "1" {
+			close(started)
+			<-release
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	cl := newConcurrencyLimiter(1)
+	chain := cl.middleware(inner)
+
+	// First request grabs the slot and blocks.
+	done := make(chan int)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Hold", "1")
+		rr := httptest.NewRecorder()
+		chain.ServeHTTP(rr, req)
+		done <- rr.Code
+	}()
+	<-started
+
+	// Second request: semaphore full -> 503.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	chain.ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("concurrent request = %d, want 503", rr.Code)
+	}
+
+	close(release)
+	if code := <-done; code != http.StatusOK {
+		t.Fatalf("held request = %d, want 200", code)
+	}
+
+	// After release, a request passes again.
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr2 := httptest.NewRecorder()
+	chain.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("post-release request = %d, want 200", rr2.Code)
+	}
+}
+
 func TestRateLimit(t *testing.T) {
 	cfg := &config.Config{
 		TelegramToken:  "123456:TEST",

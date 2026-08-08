@@ -39,6 +39,10 @@ type Config struct {
 	RateLimitRPS   float64
 	RateLimitBurst int
 
+	// MaxConcurrentRequests bounds in-flight DB-backed API requests so a flood
+	// cannot exhaust the connection pool and stall the gateway.
+	MaxConcurrentRequests int
+
 	DBPool DBPoolConfig
 
 	PollInterval  int64 // seconds between getUpdates polls
@@ -94,10 +98,12 @@ func Load(path string) (*Config, error) {
 		// RATE_LIMIT_RPS=0 to disable explicitly.
 		RateLimitRPS:   getenvFloat("RATE_LIMIT_RPS", 50),
 		RateLimitBurst: getenvInt("RATE_LIMIT_BURST", 100),
-		PollInterval:   getenvInt64("POLL_INTERVAL_SECONDS", 5),
-		RetryInterval:  getenvInt64("RETRY_INTERVAL_SECONDS", 10),
-		MaxRetries:     getenvInt("MAX_RETRIES", 5),
-		RetryBackoff:   getenvInt64("RETRY_BACKOFF_SECONDS", 30),
+		// Default 8 concurrent DB-backed requests, safely under the 10-conn pool.
+		MaxConcurrentRequests: getenvInt("MAX_CONCURRENT_REQUESTS", 8),
+		PollInterval:          getenvInt64("POLL_INTERVAL_SECONDS", 5),
+		RetryInterval:         getenvInt64("RETRY_INTERVAL_SECONDS", 10),
+		MaxRetries:            getenvInt("MAX_RETRIES", 5),
+		RetryBackoff:          getenvInt64("RETRY_BACKOFF_SECONDS", 30),
 	}
 
 	if cfg.LogLevel, err = parseLogLevel(os.Getenv("LOG_LEVEL")); err != nil {

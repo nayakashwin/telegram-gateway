@@ -19,21 +19,23 @@ const maxBodyBytes = 1 << 20 // 1 MiB
 
 // Server is the HTTP API the gateway exposes.
 type Server struct {
-	cfg     *config.Config
-	store   *store.Store
-	logger  *slog.Logger
-	metrics *metrics.Metrics
-	limiter *rateLimiter
+	cfg         *config.Config
+	store       *store.Store
+	logger      *slog.Logger
+	metrics     *metrics.Metrics
+	limiter     *rateLimiter
+	concurrency *concurrencyLimiter
 }
 
 // New creates an API Server. m may be nil.
 func New(cfg *config.Config, st *store.Store, logger *slog.Logger, m *metrics.Metrics) *Server {
 	return &Server{
-		cfg:     cfg,
-		store:   st,
-		logger:  logger,
-		metrics: m,
-		limiter: newRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
+		cfg:         cfg,
+		store:       st,
+		logger:      logger,
+		metrics:     m,
+		limiter:     newRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
+		concurrency: newConcurrencyLimiter(cfg.MaxConcurrentRequests),
 	}
 }
 
@@ -56,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	handler = s.apiKeyAuth(handler)
 	handler = s.limiter.middleware(handler)
+	handler = s.concurrency.middleware(handler)
 	handler = requestLogMiddleware(s.logger, handler)
 	return handler
 }
