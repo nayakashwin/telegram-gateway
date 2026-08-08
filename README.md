@@ -143,7 +143,9 @@ supplied via `_FILE` env vars (see [Production secrets](#7-production-secrets-op
 | `TELEGRAM_CHAT_IDS` | yes | — | Comma-separated whitelist of allowed chat/user ids |
 | `GATEWAY_API_KEY` | yes | — | API key for `X-API-Key` header. **≥16 chars**, not a weak value |
 | `DATABASE_URL` | yes | — | Postgres connection string. Non-local hosts must use `sslmode=require` or `verify-full` |
-| `POSTGRES_PASSWORD` | no | `gateway` | Password for the compose `db` service |
+| `POSTGRES_DB` | no | `gateway` | Name of the database created by the compose `db` service |
+| `POSTGRES_USER` | no | `gateway` | Database user created by the compose `db` service |
+| `POSTGRES_PASSWORD` | no | `gateway` | Password for the compose `db` service. **Change per deployment** |
 | `GATEWAY_API_PORT` | no | `8080` | Host port for the REST API (compose) |
 | `METRICS_PORT` | no | `9100` | Host port for Prometheus metrics (compose) |
 | `GATEWAY_API_ADDRESS` | no | `:8080` | API listen address when running **outside** compose (compose derives this from `GATEWAY_API_PORT`) |
@@ -167,6 +169,10 @@ supplied via `_FILE` env vars (see [Production secrets](#7-production-secrets-op
 TELEGRAM_BOT_TOKEN=123456:ABCdef...GHI
 TELEGRAM_CHAT_IDS=779839848
 GATEWAY_API_KEY=openssl-rand-hex-32-bytes
+
+# Database (compose `db` service)
+POSTGRES_DB=gateway
+POSTGRES_USER=gateway
 POSTGRES_PASSWORD=change-me-strong-password
 
 # Ports — adjust to what is free on your server
@@ -272,7 +278,9 @@ curl -H "X-API-Key: $GATEWAY_API_KEY" http://localhost:8090/api/v1/outbox/1
 ## Database contract
 
 The schema is applied automatically on startup (idempotent, advisory-locked).
-The compose Postgres runs with **TLS enabled** on an isolated network.
+The compose Postgres runs with **TLS enabled** on an isolated network, with a
+**read-only root filesystem** and a configurable database name, user, and
+password (`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD` in `.env`).
 
 - `incoming_messages` — messages received from Telegram
   (`id, chat_id, from_id, from_name, text, status, created_at`)

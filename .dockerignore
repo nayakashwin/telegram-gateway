@@ -1,0 +1,22 @@
+# Secrets — never enter the build context
+.env
+.env.*
+secrets/
+db-certs/
+
+# VCS & tooling
+.git/
+.commandcode/
+.idea/
+.vscode/
+
+# Build artifacts & caches
+bin/
+dist/
+*.test
+*.out
+Dockerfile
+docker-compose*.yml
+README.md
+scripts/
+db/
