@@ -285,7 +285,14 @@ func TestPoolConfigApplied(t *testing.T) {
 	dsn := testdb.DSN(t)
 	ctx := context.Background()
 
-	st, err := store.New(ctx, dsn, store.PoolConfig{MinConns: 1, MaxConns: 3})
+	// Non-zero lifetimes: pgx v5.10 treats zero MaxConnIdleTime as "reap
+	// immediately", which with MinConns>0 makes the pool churn connections.
+	st, err := store.New(ctx, dsn, store.PoolConfig{
+		MinConns:        1,
+		MaxConns:        3,
+		MaxConnLifetime: time.Minute,
+		MaxConnIdleTime: time.Minute,
+	})
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}

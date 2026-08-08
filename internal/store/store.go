@@ -66,6 +66,18 @@ type Store struct {
 
 // New connects to Postgres and returns a ready Store.
 func New(ctx context.Context, databaseURL string, pc PoolConfig) (*Store, error) {
+	if pc.MaxConns <= 0 || pc.MinConns < 0 || pc.MinConns > pc.MaxConns {
+		return nil, fmt.Errorf("invalid pool config: min=%d max=%d", pc.MinConns, pc.MaxConns)
+	}
+	// pgx v5.10 treats a zero MaxConnIdleTime as "reap immediately"; require a
+	// positive idle time so pools with MinConns>0 don't churn connections.
+	if pc.MaxConnIdleTime <= 0 {
+		pc.MaxConnIdleTime = DefaultPoolConfig().MaxConnIdleTime
+	}
+	if pc.MaxConnLifetime <= 0 {
+		pc.MaxConnLifetime = DefaultPoolConfig().MaxConnLifetime
+	}
+
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse pool config: %w", err)
