@@ -22,7 +22,7 @@ func TestIncomingLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := st.InsertIncoming(ctx, store.Message{
-		ChatID: 42, FromID: 7, FromName: "Alice", Text: "hello", Status: "received",
+		ChatID: 42, MessageID: 5001, FromID: 7, FromName: "Alice", Text: "hello", Status: "received",
 	})
 	if err != nil {
 		t.Fatalf("InsertIncoming: %v", err)
@@ -42,6 +42,9 @@ func TestIncomingLifecycle(t *testing.T) {
 	if got.ChatID != 42 || got.Text != "hello" || got.FromName != "Alice" {
 		t.Errorf("message = %+v", got)
 	}
+	if got.MessageID != 5001 {
+		t.Errorf("message_id = %d, want 5001", got.MessageID)
+	}
 	if got.Status != "received" {
 		t.Errorf("status = %q", got.Status)
 	}
@@ -50,11 +53,33 @@ func TestIncomingLifecycle(t *testing.T) {
 	}
 }
 
+func TestOutboxReplyToRoundTrip(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	reply := int64(1234)
+	id, err := st.InsertOutbox(ctx, 42, "replying", "test", &reply)
+	if err != nil {
+		t.Fatalf("InsertOutbox: %v", err)
+	}
+
+	item, err := st.ClaimNextOutbox(ctx, time.Now(), 0)
+	if err != nil {
+		t.Fatalf("ClaimNextOutbox: %v", err)
+	}
+	if item == nil || item.ID != id {
+		t.Fatalf("claimed = %+v, want id %d", item, id)
+	}
+	if item.ReplyToMessageID == nil || *item.ReplyToMessageID != 1234 {
+		t.Errorf("ReplyToMessageID = %v, want 1234", item.ReplyToMessageID)
+	}
+}
+
 func TestOutboxSendFlow(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, err := st.InsertOutbox(ctx, 42, "out", "test")
+	id, err := st.InsertOutbox(ctx, 42, "out", "test", nil)
 	if err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
@@ -106,7 +131,7 @@ func TestOutboxRetryBackoff(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, _ := st.InsertOutbox(ctx, 42, "retry me", "test")
+	id, _ := st.InsertOutbox(ctx, 42, "retry me", "test", nil)
 	item, _ := st.ClaimNextOutbox(ctx, time.Now(), 30)
 	if err := st.MarkOutboxFailed(ctx, id, item.Attempts+1, 3, 30, "boom"); err != nil {
 		t.Fatalf("MarkOutboxFailed: %v", err)
@@ -140,7 +165,7 @@ func TestOutboxDeadLetter(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, _ := st.InsertOutbox(ctx, 42, "will die", "test")
+	id, _ := st.InsertOutbox(ctx, 42, "will die", "test", nil)
 	item, _ := st.ClaimNextOutbox(ctx, time.Now(), 1)
 	if err := st.MarkOutboxFailed(ctx, id, item.Attempts+1, 1, 1, "fatal"); err != nil {
 		t.Fatalf("MarkOutboxFailed: %v", err)
@@ -159,7 +184,7 @@ func TestResetExpiredLocks(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, _ := st.InsertOutbox(ctx, 42, "stuck", "test")
+	id, _ := st.InsertOutbox(ctx, 42, "stuck", "test", nil)
 	// Claim with a zero backoff, simulating a worker that died mid-send.
 	if _, err := st.ClaimNextOutbox(ctx, time.Now(), 0); err != nil {
 		t.Fatalf("claim: %v", err)
@@ -205,7 +230,7 @@ func TestNotifyFires(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 
-	if _, err := st.InsertOutbox(ctx, 42, "notify me", "test"); err != nil {
+	if _, err := st.InsertOutbox(ctx, 42, "notify me", "test", nil); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 
@@ -260,7 +285,7 @@ func TestGetOutbox(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, err := st.InsertOutbox(ctx, 42, "track", "test")
+	id, err := st.InsertOutbox(ctx, 42, "track", "test", nil)
 	if err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
@@ -284,8 +309,8 @@ func TestOutboxStatusCounts(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	_, _ = st.InsertOutbox(ctx, 42, "one", "test")
-	_, _ = st.InsertOutbox(ctx, 42, "two", "test")
+	_, _ = st.InsertOutbox(ctx, 42, "one", "test", nil)
+	_, _ = st.InsertOutbox(ctx, 42, "two", "test", nil)
 
 	counts, err := st.OutboxStatusCounts(ctx)
 	if err != nil {

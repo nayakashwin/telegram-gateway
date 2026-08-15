@@ -255,15 +255,21 @@ Filtered query. All fields optional.
 
 ### `POST /api/v1/send`
 
-Enqueue an outbound message to a whitelisted chat.
+Enqueue an outbound message to a whitelisted chat. An optional
+`reply_to_message_id` (a Telegram `message_id` of an incoming message in the
+same chat) makes the message a Telegram reply to that message.
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/send \
   -H "X-API-Key: $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"chat_id": 779839848, "text": "hello from the server"}'
+  -d '{"chat_id": 779839848, "text": "hello from the server", "reply_to_message_id": 12345}'
 # 202 {"id": 1, "status": "queued", "chat_id": 779839848}
 ```
+
+Incoming messages expose the Telegram `message_id` as `message_id` on
+`POST /api/v1/messages` (alongside the gateway's own `id`), so consumers can
+round-trip it back as `reply_to_message_id`.
 
 ### `GET /api/v1/outbox/{id}`
 
@@ -290,11 +296,15 @@ password (`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD` in `.env`), and
 
 - `incoming_messages` — messages received from Telegram
   (`id, chat_id, from_id, from_name, text, status, received_at, created_at`)
+  - `tg_message_id` holds the Telegram `message_id` (exposed as `message_id`),
+    usable as `reply_to_message_id` for replies.
   - `received_at` is when the message arrived from Telegram.
 - `outbox` — outbound queue
-  (`id, chat_id, text, status, attempts, error_message, source, sent_at, locked_until, created_at, updated_at`)
+  (`id, chat_id, text, status, attempts, error_message, source, reply_to_message_id, sent_at, locked_until, created_at, updated_at`)
   - `source` records the origin of the message (`api` from the REST API,
     `unknown` for legacy/direct rows) so forged sends can be distinguished.
+  - `reply_to_message_id` optionally makes the message a Telegram reply to
+    that message id.
   - `sent_at` is when the message was actually delivered to Telegram
     (NULL until then); `created_at` is when it was queued.
   - Inserting fires `pg_notify('outbox_channel')`.

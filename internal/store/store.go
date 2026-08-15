@@ -21,6 +21,7 @@ var (
 // Message is a single Telegram message stored by the gateway.
 type Message struct {
 	ID         int64     `json:"id"`
+	MessageID  int64     `json:"message_id"` // Telegram message id, usable as reply_to_message_id
 	ChatID     int64     `json:"chat_id"`
 	FromID     int64     `json:"from_id"`
 	FromName   string    `json:"from_name"`
@@ -32,16 +33,17 @@ type Message struct {
 
 // OutboxItem is a row in the outbox queue waiting to be sent to Telegram.
 type OutboxItem struct {
-	ID           int64      `json:"id"`
-	ChatID       int64      `json:"chat_id"`
-	Text         string     `json:"text"`
-	Status       string     `json:"status"`
-	ErrorMessage string     `json:"error_message,omitempty"`
-	Attempts     int        `json:"attempts"`
-	Source       string     `json:"source"`
-	SentAt       *time.Time `json:"sent_at"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID               int64      `json:"id"`
+	ChatID           int64      `json:"chat_id"`
+	Text             string     `json:"text"`
+	Status           string     `json:"status"`
+	ErrorMessage     string     `json:"error_message,omitempty"`
+	Attempts         int        `json:"attempts"`
+	Source           string     `json:"source"`
+	ReplyToMessageID *int64     `json:"reply_to_message_id,omitempty"`
+	SentAt           *time.Time `json:"sent_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 // PoolConfig tunes the pgx connection pool.
@@ -148,6 +150,8 @@ CREATE INDEX IF NOT EXISTS idx_incoming_created ON incoming_messages (created_at
 CREATE INDEX IF NOT EXISTS idx_incoming_chat_created ON incoming_messages (chat_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_incoming_from_created ON incoming_messages (from_id, created_at DESC);
 ALTER TABLE incoming_messages ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ NOT NULL DEFAULT now();
+-- Telegram message id of the incoming message; used by consumers to reply.
+ALTER TABLE incoming_messages ADD COLUMN IF NOT EXISTS tg_message_id BIGINT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS outbox (
     id            BIGSERIAL PRIMARY KEY,
@@ -167,6 +171,9 @@ ALTER TABLE outbox ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
 -- Source attribution: where an outbound message originated. 'api' = REST API,
 -- 'internal' = direct DB insert by the application. Helps detect forged sends.
 ALTER TABLE outbox ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'unknown';
+
+-- Optional Telegram message id this outbound message replies to.
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS reply_to_message_id BIGINT;
 
 CREATE OR REPLACE FUNCTION notify_outbox() RETURNS trigger AS $$
 BEGIN
@@ -195,9 +202,9 @@ func (s *Store) Close() {
 func (s *Store) InsertIncoming(ctx context.Context, m Message) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO incoming_messages (chat_id, from_id, from_name, text, status, received_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, now())) RETURNING id`,
-		m.ChatID, m.FromID, m.FromName, m.Text, m.Status, nullIfZero(m.ReceivedAt),
+		`INSERT INTO incoming_messages (chat_id, from_id, from_name, text, status, tg_message_id, received_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now())) RETURNING id`,
+		m.ChatID, m.FromID, m.FromName, m.Text, m.Status, m.MessageID, nullIfZero(m.ReceivedAt),
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert incoming: %w", err)
@@ -215,11 +222,13 @@ func nullIfZero(t time.Time) any {
 
 // InsertOutbox queues a message for sending. source records where the
 // outbound message originated (e.g. "api", "internal") for attribution.
-func (s *Store) InsertOutbox(ctx context.Context, chatID int64, text, source string) (int64, error) {
+// replyToMessageID, when non-nil, makes the outbound message a Telegram reply
+// to that incoming message id.
+func (s *Store) InsertOutbox(ctx context.Context, chatID int64, text, source string, replyToMessageID *int64) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO outbox (chat_id, text, status, source) VALUES ($1, $2, 'pending', $3) RETURNING id`,
-		chatID, text, source,
+		`INSERT INTO outbox (chat_id, text, status, source, reply_to_message_id) VALUES ($1, $2, 'pending', $3, $4) RETURNING id`,
+		chatID, text, source, replyToMessageID,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert outbox: %w", err)
@@ -244,9 +253,9 @@ func (s *Store) ClaimNextOutbox(ctx context.Context, now time.Time, retryBackoff
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING id, chat_id, text, status, attempts, error_message, source, sent_at, created_at`,
+		RETURNING id, chat_id, text, status, attempts, error_message, source, reply_to_message_id, sent_at, created_at`,
 		now, retryBackoff,
-	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.SentAt, &item.CreatedAt)
+	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.ReplyToMessageID, &item.SentAt, &item.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -316,7 +325,7 @@ func (s *Store) ResetExpiredLocks(ctx context.Context, now time.Time) error {
 // ListIncoming returns recent incoming messages, newest first.
 func (s *Store) ListIncoming(ctx context.Context, limit int) ([]Message, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, chat_id, from_id, from_name, text, status, received_at, created_at
+		SELECT id, chat_id, from_id, from_name, text, status, tg_message_id, received_at, created_at
 		FROM incoming_messages ORDER BY id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list incoming: %w", err)
@@ -326,7 +335,7 @@ func (s *Store) ListIncoming(ctx context.Context, limit int) ([]Message, error) 
 	msgs := []Message{}
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.ChatID, &m.FromID, &m.FromName, &m.Text, &m.Status, &m.ReceivedAt, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.FromID, &m.FromName, &m.Text, &m.Status, &m.MessageID, &m.ReceivedAt, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan incoming: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -353,7 +362,7 @@ func (s *Store) QueryIncoming(ctx context.Context, f IncomingFilter) ([]Message,
 		f.Limit = 50
 	}
 
-	query := `SELECT id, chat_id, from_id, from_name, text, status, received_at, created_at
+	query := `SELECT id, chat_id, from_id, from_name, text, status, tg_message_id, received_at, created_at
 	          FROM incoming_messages WHERE true`
 	var args []any
 	n := 1
@@ -395,7 +404,7 @@ func (s *Store) QueryIncoming(ctx context.Context, f IncomingFilter) ([]Message,
 	msgs := []Message{}
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.ChatID, &m.FromID, &m.FromName, &m.Text, &m.Status, &m.ReceivedAt, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.FromID, &m.FromName, &m.Text, &m.Status, &m.MessageID, &m.ReceivedAt, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan incoming: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -410,9 +419,9 @@ func (s *Store) QueryIncoming(ctx context.Context, f IncomingFilter) ([]Message,
 func (s *Store) GetOutbox(ctx context.Context, id int64) (*OutboxItem, error) {
 	var item OutboxItem
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, chat_id, text, status, attempts, error_message, source, sent_at, created_at, updated_at
+		SELECT id, chat_id, text, status, attempts, error_message, source, reply_to_message_id, sent_at, created_at, updated_at
 		FROM outbox WHERE id = $1`, id,
-	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.SentAt, &item.CreatedAt, &item.UpdatedAt)
+	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.ReplyToMessageID, &item.SentAt, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNoRows

@@ -221,8 +221,9 @@ func (s *Server) handleQueryMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 type sendRequest struct {
-	ChatID int64  `json:"chat_id"`
-	Text   string `json:"text"`
+	ChatID           int64  `json:"chat_id"`
+	Text             string `json:"text"`
+	ReplyToMessageID *int64 `json:"reply_to_message_id,omitempty"`
 }
 
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
@@ -242,8 +243,12 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "chat_id is not whitelisted")
 		return
 	}
+	if req.ReplyToMessageID != nil && *req.ReplyToMessageID <= 0 {
+		writeError(w, http.StatusBadRequest, "reply_to_message_id must be a positive integer")
+		return
+	}
 
-	id, err := s.store.InsertOutbox(r.Context(), req.ChatID, req.Text, "api")
+	id, err := s.store.InsertOutbox(r.Context(), req.ChatID, req.Text, "api", req.ReplyToMessageID)
 	if err != nil {
 		s.logger.Error("enqueue send", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue message")

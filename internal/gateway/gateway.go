@@ -92,11 +92,12 @@ func (g *Gateway) handleIncoming(ctx context.Context, u telegram.Update) {
 	}
 
 	_, err := g.store.InsertIncoming(ctx, store.Message{
-		ChatID:   m.Chat.ID,
-		FromID:   m.From.ID,
-		FromName: name,
-		Text:     m.Text,
-		Status:   "received",
+		ChatID:    m.Chat.ID,
+		MessageID: m.MessageID,
+		FromID:    m.From.ID,
+		FromName:  name,
+		Text:      m.Text,
+		Status:    "received",
 	})
 	if err != nil {
 		g.logger.Error("store incoming message", "error", err)
@@ -156,7 +157,11 @@ func (g *Gateway) processOutbox(ctx context.Context) {
 	if g.metrics != nil {
 		g.metrics.ObserveOutboxAttempt()
 	}
-	_, err = g.client.SendMessage(ctx, item.ChatID, item.Text)
+	var replyTo int64
+	if item.ReplyToMessageID != nil {
+		replyTo = *item.ReplyToMessageID
+	}
+	_, err = g.client.SendMessage(ctx, item.ChatID, item.Text, replyTo)
 	if err == nil {
 		g.logger.Info("sent message", "outbox_id", item.ID, "chat_id", item.ChatID)
 		// Use a context that survives parent cancellation so the row is never

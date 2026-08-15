@@ -111,11 +111,17 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int64) ([
 }
 
 // SendMessage sends a text message to the given chat and returns the message id.
-func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) (int64, error) {
-	body, err := json.Marshal(map[string]any{
+// replyToMessageID, when > 0, makes the message a Telegram reply to that
+// message id in the same chat.
+func (c *Client) SendMessage(ctx context.Context, chatID int64, text string, replyToMessageID int64) (int64, error) {
+	req := map[string]any{
 		"chat_id": chatID,
 		"text":    text,
-	})
+	}
+	if replyToMessageID > 0 {
+		req["reply_to_message_id"] = replyToMessageID
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return 0, fmt.Errorf("marshal sendMessage: %w", err)
 	}

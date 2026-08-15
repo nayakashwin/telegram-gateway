@@ -123,6 +123,35 @@ func TestSendFlow(t *testing.T) {
 	}
 }
 
+func TestSendReplyToMessageID(t *testing.T) {
+	srv, st := newTestServer(t)
+
+	// Invalid reply_to_message_id -> 400.
+	code, _ := doReq(t, http.MethodPost, srv.URL+"/api/v1/send",
+		`{"chat_id":111,"text":"hi","reply_to_message_id":0}`, "0123456789abcdef")
+	if code != http.StatusBadRequest {
+		t.Fatalf("zero reply id = %d, want 400", code)
+	}
+
+	// Valid reply -> 202 + persisted on the outbox row.
+	code, body := doReq(t, http.MethodPost, srv.URL+"/api/v1/send",
+		`{"chat_id":111,"text":"hi","reply_to_message_id":777}`, "0123456789abcdef")
+	if code != http.StatusAccepted {
+		t.Fatalf("send with reply = %d, want 202 (body %v)", code, body)
+	}
+	id, ok := body["id"].(float64)
+	if !ok || id <= 0 {
+		t.Fatalf("id = %v", body["id"])
+	}
+	item, err := st.GetOutbox(context.Background(), int64(id))
+	if err != nil {
+		t.Fatalf("get outbox: %v", err)
+	}
+	if item.ReplyToMessageID == nil || *item.ReplyToMessageID != 777 {
+		t.Errorf("ReplyToMessageID = %v, want 777", item.ReplyToMessageID)
+	}
+}
+
 func TestListMessages(t *testing.T) {
 	srv, st := newTestServer(t)
 
@@ -218,7 +247,7 @@ func TestQueryMessagesFilters(t *testing.T) {
 func TestGetOutboxByID(t *testing.T) {
 	srv, st := newTestServer(t)
 
-	id, err := st.InsertOutbox(context.Background(), 111, "track me", "test")
+	id, err := st.InsertOutbox(context.Background(), 111, "track me", "test", nil)
 	if err != nil {
 		t.Fatalf("insert outbox: %v", err)
 	}

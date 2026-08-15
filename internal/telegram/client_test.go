@@ -82,7 +82,7 @@ func TestSendMessageOK(t *testing.T) {
 		io.WriteString(w, `{"ok": true, "result": {"message_id": 99, "chat": {"id": 42}, "text": "yo"}}`)
 	})
 
-	id, err := client.SendMessage(context.Background(), 42, "yo")
+	id, err := client.SendMessage(context.Background(), 42, "yo", 0)
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -97,12 +97,36 @@ func TestSendMessageOK(t *testing.T) {
 	}
 }
 
+func TestSendMessageReplyTo(t *testing.T) {
+	client, reqs := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"ok": true, "result": {"message_id": 99, "chat": {"id": 42}, "text": "yo"}}`)
+	})
+
+	if _, err := client.SendMessage(context.Background(), 42, "yo", 12345); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if len(*reqs) == 0 {
+		t.Fatal("no request recorded")
+	}
+	if (*reqs)[0]["reply_to_message_id"] != float64(12345) {
+		t.Errorf("request = %v, want reply_to_message_id=12345", (*reqs)[0])
+	}
+
+	if _, err := client.SendMessage(context.Background(), 42, "yo", 0); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if _, ok := (*reqs)[1]["reply_to_message_id"]; ok {
+		t.Errorf("request = %v, reply_to_message_id should be omitted when 0", (*reqs)[1])
+	}
+}
+
 func TestSendMessageAPIError(t *testing.T) {
 	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"ok": false, "description": "chat not found"}`)
 	})
-	if _, err := client.SendMessage(context.Background(), 1, "x"); err == nil {
+	if _, err := client.SendMessage(context.Background(), 1, "x", 0); err == nil {
 		t.Fatal("expected error")
 	}
 }
