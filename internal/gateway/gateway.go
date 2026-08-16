@@ -108,19 +108,62 @@ func (g *Gateway) handleIncoming(ctx context.Context, u telegram.Update) {
 		"chat_id", m.Chat.ID, "from", m.From.ID, "text", m.Text)
 }
 
-// outboxWorker periodically claims and sends pending outbox rows.
+// outboxWorker sends pending outbox rows. It wakes immediately whenever a new
+// row is enqueued (via LISTEN/NOTIFY), draining the whole queue per wake, and
+// falls back to a periodic sweep for retries and rows inserted while the
+// listener was down.
 func (g *Gateway) outboxWorker(ctx context.Context) {
 	// Seed the backlog gauge once at startup.
 	g.refreshBacklog(ctx)
 
-	ticker := time.NewTicker(time.Duration(g.cfg.RetryInterval) * time.Second)
-	defer ticker.Stop()
+	listener, err := g.store.NewOutboxListener(ctx)
+	if err != nil {
+		g.logger.Error("outbox listen", "error", err)
+	}
+	if listener != nil {
+		defer func() { listener.Close() }()
+	}
+
+	sweep := time.NewTicker(time.Duration(g.cfg.RetryInterval) * time.Second)
+	defer sweep.Stop()
+
+	// Notification wait deadline; also bounds idle wake-ups so retries and any
+	// notifications missed between a wake and processing are still picked up.
+	const waitDeadline = 2 * time.Second
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		default:
+		}
+
+		if listener != nil {
+			notified, err := listener.Wait(ctx, waitDeadline)
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				g.logger.Error("outbox notify wait", "error", err)
+				if l, lerr := g.store.NewOutboxListener(ctx); lerr != nil {
+					g.logger.Error("outbox relisten", "error", lerr)
+				} else {
+					listener.Close()
+					listener = l
+				}
+				continue
+			}
+			if notified {
+				g.processOutbox(ctx)
+				g.refreshBacklog(ctx)
+			}
+			continue
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-sweep.C:
 			g.processOutbox(ctx)
 			g.refreshBacklog(ctx)
 		}
@@ -139,57 +182,61 @@ func (g *Gateway) refreshBacklog(ctx context.Context) {
 	g.metrics.SetOutboxBacklog(counts)
 }
 
-// processOutbox claims one outbox row and attempts to send it.
+// processOutbox claims and sends all currently pending outbox rows. It stops
+// draining on the first failed send so the row's retry lock is honored; the
+// next wake or sweep retries it and continues with the remainder.
 func (g *Gateway) processOutbox(ctx context.Context) {
 	if err := g.store.ResetExpiredLocks(ctx, time.Now()); err != nil {
 		g.logger.Error("reset expired locks", "error", err)
 	}
 
-	item, err := g.store.ClaimNextOutbox(ctx, time.Now(), g.cfg.RetryBackoff)
-	if err != nil {
-		g.logger.Error("claim outbox", "error", err)
-		return
-	}
-	if item == nil {
-		return
-	}
+	for {
+		item, err := g.store.ClaimNextOutbox(ctx, time.Now(), g.cfg.RetryBackoff)
+		if err != nil {
+			g.logger.Error("claim outbox", "error", err)
+			return
+		}
+		if item == nil {
+			return
+		}
 
-	if g.metrics != nil {
-		g.metrics.ObserveOutboxAttempt()
-	}
-	var replyTo int64
-	if item.ReplyToMessageID != nil {
-		replyTo = *item.ReplyToMessageID
-	}
-	_, err = g.client.SendMessage(ctx, item.ChatID, item.Text, replyTo)
-	if err == nil {
+		if g.metrics != nil {
+			g.metrics.ObserveOutboxAttempt()
+		}
+		var replyTo int64
+		if item.ReplyToMessageID != nil {
+			replyTo = *item.ReplyToMessageID
+		}
+		_, err = g.client.SendMessage(ctx, item.ChatID, item.Text, replyTo)
+		if err != nil {
+			g.logger.Error("send failed", "outbox_id", item.ID, "error", err)
+			attempts := item.Attempts + 1
+			backoff := g.cfg.RetryBackoff * int64(attempts)
+			markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			if err := g.store.MarkOutboxFailed(markCtx, item.ID, attempts, g.cfg.MaxRetries, backoff, err.Error()); err != nil {
+				g.logger.Error("mark outbox failed", "error", err)
+			}
+			cancel()
+			if g.metrics != nil {
+				status := "failed"
+				if attempts >= g.cfg.MaxRetries {
+					status = "dead"
+				}
+				g.metrics.ObserveOutboxStatus(status)
+			}
+			return
+		}
+
 		g.logger.Info("sent message", "outbox_id", item.ID, "chat_id", item.ChatID)
 		// Use a context that survives parent cancellation so the row is never
 		// left in 'processing' after shutdown.
 		markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
 		if err := g.store.MarkOutboxSent(markCtx, item.ID); err != nil {
 			g.logger.Error("mark outbox sent", "error", err)
 		}
+		cancel()
 		if g.metrics != nil {
 			g.metrics.ObserveOutboxStatus("sent")
 		}
-		return
-	}
-
-	g.logger.Error("send failed", "outbox_id", item.ID, "error", err)
-	attempts := item.Attempts + 1
-	backoff := g.cfg.RetryBackoff * int64(attempts)
-	markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if err := g.store.MarkOutboxFailed(markCtx, item.ID, attempts, g.cfg.MaxRetries, backoff, err.Error()); err != nil {
-		g.logger.Error("mark outbox failed", "error", err)
-	}
-	if g.metrics != nil {
-		status := "failed"
-		if attempts >= g.cfg.MaxRetries {
-			status = "dead"
-		}
-		g.metrics.ObserveOutboxStatus(status)
 	}
 }

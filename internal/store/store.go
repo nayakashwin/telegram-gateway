@@ -322,6 +322,50 @@ func (s *Store) ResetExpiredLocks(ctx context.Context, now time.Time) error {
 	return nil
 }
 
+// OutboxListener is a dedicated connection LISTENing on outbox_channel. It lets
+// the gateway wake up as soon as a message is enqueued instead of only on the
+// periodic retry sweep, which cuts notification latency from the sweep interval
+// down to near zero.
+type OutboxListener struct {
+	conn *pgxpool.Conn
+}
+
+// NewOutboxListener acquires a dedicated connection from the pool and LISTENs
+// on outbox_channel. The connection is not part of the pool's regular checkout
+// rotation, so notifications are not lost while other queries run.
+func (s *Store) NewOutboxListener(ctx context.Context) (*OutboxListener, error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire listen connection: %w", err)
+	}
+	if _, err := conn.Conn().Exec(ctx, "LISTEN outbox_channel"); err != nil {
+		conn.Release()
+		return nil, fmt.Errorf("listen outbox_channel: %w", err)
+	}
+	return &OutboxListener{conn: conn}, nil
+}
+
+// Wait blocks until an outbox notification arrives or the timeout elapses. It
+// reports whether a notification was received. The connection stays usable
+// across calls, so callers may Wait repeatedly.
+func (l *OutboxListener) Wait(ctx context.Context, timeout time.Duration) (bool, error) {
+	wctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	n, err := l.conn.Conn().WaitForNotification(wctx)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || pgconn.Timeout(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return n != nil, nil
+}
+
+// Close returns the listener connection to the pool.
+func (l *OutboxListener) Close() {
+	l.conn.Release()
+}
+
 // ListIncoming returns recent incoming messages, newest first.
 func (s *Store) ListIncoming(ctx context.Context, limit int) ([]Message, error) {
 	rows, err := s.pool.Query(ctx, `

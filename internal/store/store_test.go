@@ -246,6 +246,42 @@ func TestNotifyFires(t *testing.T) {
 	}
 }
 
+func TestOutboxListenerWakesOnInsert(t *testing.T) {
+	st := testdb.NewStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	listener, err := st.NewOutboxListener(ctx)
+	if err != nil {
+		t.Fatalf("NewOutboxListener: %v", err)
+	}
+	defer listener.Close()
+
+	// Drain notifications queued by other test processes sharing the channel
+	// so the final assertion proves OUR insert wakes the listener.
+	for {
+		notified, err := listener.Wait(ctx, 100*time.Millisecond)
+		if err != nil {
+			t.Fatalf("Wait while draining: %v", err)
+		}
+		if !notified {
+			break
+		}
+	}
+
+	if _, err := st.InsertOutbox(ctx, 42, "wake me", "test", nil); err != nil {
+		t.Fatalf("InsertOutbox: %v", err)
+	}
+
+	notified, err := listener.Wait(ctx, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Wait after insert: %v", err)
+	}
+	if !notified {
+		t.Error("Wait timed out; expected notification from insert")
+	}
+}
+
 func TestQueryIncomingFilters(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
