@@ -21,10 +21,17 @@ type DBPoolConfig struct {
 	MaxConnIdleTime time.Duration
 }
 
+// Bot is a named Telegram bot the gateway can send through. The first bot in
+// Config.Bots is the default used when a client does not specify one.
+type Bot struct {
+	Name  string `json:"name"`
+	Token string `json:"-"`
+}
+
 // Config holds all runtime configuration for the gateway.
 type Config struct {
-	TelegramToken string
-	ChatIDs       []int64
+	Bots    []Bot
+	ChatIDs []int64
 
 	DatabaseURL     string
 	AllowInsecureDB bool
@@ -60,6 +67,8 @@ var weakAPIKeys = map[string]bool{
 
 var tokenRe = regexp.MustCompile(`^[0-9]+:[A-Za-z0-9_-]+$`)
 
+var botNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
 // Load reads configuration from the environment (optionally via a .env file).
 // If path is non-empty and the file exists, it is loaded first; a missing
 // .env is not an error so Docker-compose environments work unchanged.
@@ -86,8 +95,13 @@ func Load(path string) (*Config, error) {
 	}
 	legacyKey := os.Getenv("GATEWAY_API_KEY_LEGACY")
 
+	bots, err := loadBots(token)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
-		TelegramToken:   token,
+		Bots:            bots,
 		DatabaseURL:     dbURL,
 		APIKey:          apiKey,
 		LegacyAPIKey:    legacyKey,
@@ -158,12 +172,20 @@ func loadPoolConfig() (DBPoolConfig, error) {
 }
 
 func (c *Config) validate() error {
-	if c.TelegramToken == "" {
+	if len(c.Bots) == 0 {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN is required")
 	}
-	if !tokenRe.MatchString(c.TelegramToken) {
-		return fmt.Errorf("TELEGRAM_BOT_TOKEN is malformed (expected <bot_id>:<token>)")
+	seen := make(map[string]bool, len(c.Bots))
+	for _, b := range c.Bots {
+		if !tokenRe.MatchString(b.Token) {
+			return fmt.Errorf("bot %q token is malformed (expected <bot_id>:<token>)", b.Name)
+		}
+		if seen[b.Name] {
+			return fmt.Errorf("duplicate bot name %q", b.Name)
+		}
+		seen[b.Name] = true
 	}
+
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
@@ -301,6 +323,63 @@ func parseDuration(key string, def time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s is invalid: %w", key, err)
 	}
 	return d, nil
+}
+
+// loadBots builds the bot list. TELEGRAM_BOT_TOKEN is the default bot (named
+// "default"); TELEGRAM_BOT_TOKENS adds more as comma-separated name=token pairs.
+func loadBots(defaultToken string) ([]Bot, error) {
+	var bots []Bot
+	if defaultToken != "" {
+		bots = append(bots, Bot{Name: "default", Token: defaultToken})
+	}
+	raw := os.Getenv("TELEGRAM_BOT_TOKENS")
+	if raw == "" {
+		return bots, nil
+	}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, token, ok := strings.Cut(part, "=")
+		name = strings.ToLower(strings.TrimSpace(name))
+		token = strings.TrimSpace(token)
+		if !ok || name == "" || token == "" {
+			return nil, fmt.Errorf("TELEGRAM_BOT_TOKENS entry %q must be name=token", part)
+		}
+		if !botNameRe.MatchString(name) {
+			return nil, fmt.Errorf("TELEGRAM_BOT_TOKENS bot name %q is invalid (use lowercase letters, digits, '-' or '_')", name)
+		}
+		bots = append(bots, Bot{Name: name, Token: token})
+	}
+	return bots, nil
+}
+
+// DefaultBot returns the first configured bot, used when a request does not
+// name a specific bot. Load guarantees at least one bot exists.
+func (c *Config) DefaultBot() *Bot {
+	if len(c.Bots) == 0 {
+		return nil
+	}
+	return &c.Bots[0]
+}
+
+// BotByName returns the configured bot with the given name (case-insensitive).
+// An empty name resolves to the default bot.
+func (c *Config) BotByName(name string) (*Bot, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		if b := c.DefaultBot(); b != nil {
+			return b, true
+		}
+		return nil, false
+	}
+	for i := range c.Bots {
+		if c.Bots[i].Name == name {
+			return &c.Bots[i], true
+		}
+	}
+	return nil, false
 }
 
 // IsAllowedChat reports whether the given chat id is in the whitelist.

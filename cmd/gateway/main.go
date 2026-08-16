@@ -52,10 +52,15 @@ func main() {
 	m := metrics.New()
 	m.RegisterPool(st)
 
-	client := telegram.New(cfg.TelegramToken, logger)
-	client.SetMetrics(m)
+	defaultClient := telegram.New(cfg.DefaultBot().Token, logger)
+	defaultClient.SetMetrics(m)
 
-	gateway := gateway.New(cfg, st, client, logger, m)
+	gateway := gateway.New(cfg, st, defaultClient, logger, m)
+	for _, b := range cfg.Bots[1:] {
+		c := telegram.New(b.Token, logger)
+		c.SetMetrics(m)
+		gateway.RegisterBot(b.Name, c)
+	}
 	apiServer := api.New(cfg, st, logger, m)
 
 	g, gctx := errgroup.WithContext(ctx)

@@ -22,8 +22,8 @@ func TestLoadMissingEnvFileOK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load with missing .env should succeed, got %v", err)
 	}
-	if cfg.TelegramToken != "123456:TESTTOKEN" {
-		t.Errorf("token = %q", cfg.TelegramToken)
+	if cfg.DefaultBot().Token != "123456:TESTTOKEN" {
+		t.Errorf("token = %q", cfg.DefaultBot().Token)
 	}
 }
 
@@ -160,8 +160,51 @@ func TestSecretFilePrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.TelegramToken != "123456:FROMFILE" {
-		t.Errorf("token = %q, want file value", cfg.TelegramToken)
+	if cfg.DefaultBot().Token != "123456:FROMFILE" {
+		t.Errorf("token = %q, want file value", cfg.DefaultBot().Token)
+	}
+}
+
+func TestMultipleBotsParsed(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("TELEGRAM_BOT_TOKENS", "server_hunter_bot=111222:AAA,second-bot=333444:BBB")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Bots) != 3 {
+		t.Fatalf("bots = %d, want 3 (default + 2 configured)", len(cfg.Bots))
+	}
+	if cfg.DefaultBot().Name != "default" {
+		t.Errorf("default name = %q", cfg.DefaultBot().Name)
+	}
+	if got, ok := cfg.BotByName("server_hunter_bot"); !ok || got.Token != "111222:AAA" {
+		t.Errorf("BotByName(server_hunter_bot) = %+v ok=%v", got, ok)
+	}
+	if got, ok := cfg.BotByName("SECOND-BOT"); !ok || got.Token != "333444:BBB" {
+		t.Errorf("BotByName(SECOND-BOT, case-insensitive) = %+v ok=%v", got, ok)
+	}
+	if _, ok := cfg.BotByName("nope"); ok {
+		t.Error("BotByName(nope) should not be found")
+	}
+	if got, ok := cfg.BotByName(""); !ok || got.Name != "default" {
+		t.Errorf("BotByName(empty) should resolve to default, got %+v ok=%v", got, ok)
+	}
+}
+
+func TestMultipleBotsRejectsDuplicateName(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("TELEGRAM_BOT_TOKENS", "dup=111222:AAA,dup=333444:BBB")
+	if _, err := Load(""); err == nil {
+		t.Fatal("duplicate bot names should be rejected")
+	}
+}
+
+func TestMultipleBotsRejectsMalformedEntry(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("TELEGRAM_BOT_TOKENS", "no-equals-sign-here")
+	if _, err := Load(""); err == nil {
+		t.Fatal("malformed bot entry should be rejected")
 	}
 }
 

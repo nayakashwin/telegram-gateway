@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,22 +17,56 @@ import (
 type Gateway struct {
 	cfg     *config.Config
 	store   *store.Store
-	client  *telegram.Client
+	clients map[string]*telegram.Client // keyed by lowercased bot name
 	logger  *slog.Logger
 	metrics *metrics.Metrics
 }
 
-// New creates a Gateway. m may be nil.
+// New creates a Gateway. client is the default bot's client. m may be nil.
+// Additional bots must be wired with RegisterBot before Run.
 func New(cfg *config.Config, st *store.Store, client *telegram.Client, logger *slog.Logger, m *metrics.Metrics) *Gateway {
-	return &Gateway{cfg: cfg, store: st, client: client, logger: logger, metrics: m}
+	g := &Gateway{
+		cfg:     cfg,
+		store:   st,
+		clients: map[string]*telegram.Client{},
+		logger:  logger,
+		metrics: m,
+	}
+	if b := cfg.DefaultBot(); b != nil && client != nil {
+		g.clients[b.Name] = client
+	}
+	return g
 }
 
-// Run starts the poll loop and outbox worker, blocking until ctx is done.
+// RegisterBot attaches a client for a named bot. The name must match one in
+// cfg.Bots; main wires every configured bot this way.
+func (g *Gateway) RegisterBot(name string, client *telegram.Client) {
+	g.clients[strings.ToLower(name)] = client
+}
+
+func (g *Gateway) clientFor(name string) *telegram.Client {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		if b := g.cfg.DefaultBot(); b != nil {
+			name = b.Name
+		}
+	}
+	return g.clients[name]
+}
+
+// Run starts a poll loop per bot and the outbox worker, blocking until ctx is done.
 func (g *Gateway) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 
-	wg.Add(2)
-	go func() { defer wg.Done(); g.pollLoop(ctx) }()
+	for _, b := range g.cfg.Bots {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			g.pollLoop(ctx, name)
+		}(b.Name)
+	}
+
+	wg.Add(1)
 	go func() { defer wg.Done(); g.outboxWorker(ctx) }()
 
 	<-ctx.Done()
@@ -39,13 +74,20 @@ func (g *Gateway) Run(ctx context.Context) error {
 	return nil
 }
 
-// pollLoop long-polls Telegram and stores incoming messages.
-func (g *Gateway) pollLoop(ctx context.Context) {
+// pollLoop long-polls Telegram for updates for a single bot and stores incoming
+// messages. Each bot keeps its own update offset.
+func (g *Gateway) pollLoop(ctx context.Context, botName string) {
+	client := g.clientFor(botName)
+	if client == nil {
+		g.logger.Error("poll: no client for bot", "bot", botName)
+		return
+	}
+
 	var offset int64
 
 	// Verify the token once at startup.
-	if _, err := g.client.GetMe(ctx); err != nil {
-		g.logger.Error("getMe failed (check TELEGRAM_BOT_TOKEN)", "error", err)
+	if _, err := client.GetMe(ctx); err != nil {
+		g.logger.Error("getMe failed (check TELEGRAM_BOT_TOKEN)", "bot", botName, "error", err)
 	}
 
 	for {
@@ -53,9 +95,9 @@ func (g *Gateway) pollLoop(ctx context.Context) {
 			return
 		}
 
-		updates, err := g.client.GetUpdates(ctx, offset, g.cfg.PollInterval)
+		updates, err := client.GetUpdates(ctx, offset, g.cfg.PollInterval)
 		if err != nil {
-			g.logger.Error("getUpdates failed", "error", err)
+			g.logger.Error("getUpdates failed", "bot", botName, "error", err)
 			select {
 			case <-time.After(3 * time.Second):
 			case <-ctx.Done():
@@ -68,13 +110,13 @@ func (g *Gateway) pollLoop(ctx context.Context) {
 			if u.UpdateID >= offset {
 				offset = u.UpdateID + 1
 			}
-			g.handleIncoming(ctx, u)
+			g.handleIncoming(ctx, u, botName)
 		}
 	}
 }
 
 // handleIncoming stores a received Telegram message if the chat is whitelisted.
-func (g *Gateway) handleIncoming(ctx context.Context, u telegram.Update) {
+func (g *Gateway) handleIncoming(ctx context.Context, u telegram.Update, botName string) {
 	m := u.Message
 	if m == nil {
 		return
@@ -82,7 +124,7 @@ func (g *Gateway) handleIncoming(ctx context.Context, u telegram.Update) {
 
 	if !g.cfg.IsAllowedChat(m.Chat.ID) {
 		g.logger.Info("ignoring message from non-whitelisted chat",
-			"chat_id", m.Chat.ID, "from", m.From.ID)
+			"bot", botName, "chat_id", m.Chat.ID, "from", m.From.ID)
 		return
 	}
 
@@ -100,12 +142,12 @@ func (g *Gateway) handleIncoming(ctx context.Context, u telegram.Update) {
 		Status:    "received",
 	})
 	if err != nil {
-		g.logger.Error("store incoming message", "error", err)
+		g.logger.Error("store incoming message", "bot", botName, "error", err)
 		return
 	}
 
 	g.logger.Info("received message",
-		"chat_id", m.Chat.ID, "from", m.From.ID, "text", m.Text)
+		"bot", botName, "chat_id", m.Chat.ID, "from", m.From.ID, "text", m.Text)
 }
 
 // outboxWorker sends pending outbox rows. It wakes immediately whenever a new
@@ -207,7 +249,20 @@ func (g *Gateway) processOutbox(ctx context.Context) {
 		if item.ReplyToMessageID != nil {
 			replyTo = *item.ReplyToMessageID
 		}
-		_, err = g.client.SendMessage(ctx, item.ChatID, item.Text, replyTo)
+		client := g.clientFor(item.Bot)
+		if client == nil {
+			g.logger.Error("no client for outbox bot; marking dead", "outbox_id", item.ID, "bot", item.Bot)
+			markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			if err := g.store.MarkOutboxFailed(markCtx, item.ID, g.cfg.MaxRetries, g.cfg.MaxRetries, 0, "unknown bot: "+item.Bot); err != nil {
+				g.logger.Error("mark outbox failed", "error", err)
+			}
+			cancel()
+			if g.metrics != nil {
+				g.metrics.ObserveOutboxStatus("dead")
+			}
+			continue
+		}
+		_, err = client.SendMessage(ctx, item.ChatID, item.Text, replyTo)
 		if err != nil {
 			g.logger.Error("send failed", "outbox_id", item.ID, "error", err)
 			attempts := item.Attempts + 1

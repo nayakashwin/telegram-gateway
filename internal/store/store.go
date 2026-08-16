@@ -41,6 +41,7 @@ type OutboxItem struct {
 	Attempts         int        `json:"attempts"`
 	Source           string     `json:"source"`
 	ReplyToMessageID *int64     `json:"reply_to_message_id,omitempty"`
+	Bot              string     `json:"bot,omitempty"`
 	SentAt           *time.Time `json:"sent_at"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
@@ -175,6 +176,9 @@ ALTER TABLE outbox ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'unknow
 -- Optional Telegram message id this outbound message replies to.
 ALTER TABLE outbox ADD COLUMN IF NOT EXISTS reply_to_message_id BIGINT;
 
+-- Name of the bot used to deliver this message (empty = default bot).
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS bot TEXT NOT NULL DEFAULT '';
+
 CREATE OR REPLACE FUNCTION notify_outbox() RETURNS trigger AS $$
 BEGIN
     PERFORM pg_notify('outbox_channel', row_to_json(NEW)::text);
@@ -222,13 +226,14 @@ func nullIfZero(t time.Time) any {
 
 // InsertOutbox queues a message for sending. source records where the
 // outbound message originated (e.g. "api", "internal") for attribution.
+// bot is the name of the bot to deliver through; empty selects the default.
 // replyToMessageID, when non-nil, makes the outbound message a Telegram reply
 // to that incoming message id.
-func (s *Store) InsertOutbox(ctx context.Context, chatID int64, text, source string, replyToMessageID *int64) (int64, error) {
+func (s *Store) InsertOutbox(ctx context.Context, chatID int64, text, source, bot string, replyToMessageID *int64) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO outbox (chat_id, text, status, source, reply_to_message_id) VALUES ($1, $2, 'pending', $3, $4) RETURNING id`,
-		chatID, text, source, replyToMessageID,
+		`INSERT INTO outbox (chat_id, text, status, source, bot, reply_to_message_id) VALUES ($1, $2, 'pending', $3, $4, $5) RETURNING id`,
+		chatID, text, source, bot, replyToMessageID,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert outbox: %w", err)
@@ -253,9 +258,9 @@ func (s *Store) ClaimNextOutbox(ctx context.Context, now time.Time, retryBackoff
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING id, chat_id, text, status, attempts, error_message, source, reply_to_message_id, sent_at, created_at`,
+		RETURNING id, chat_id, text, status, attempts, error_message, source, bot, reply_to_message_id, sent_at, created_at`,
 		now, retryBackoff,
-	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.ReplyToMessageID, &item.SentAt, &item.CreatedAt)
+	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.Bot, &item.ReplyToMessageID, &item.SentAt, &item.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -463,9 +468,9 @@ func (s *Store) QueryIncoming(ctx context.Context, f IncomingFilter) ([]Message,
 func (s *Store) GetOutbox(ctx context.Context, id int64) (*OutboxItem, error) {
 	var item OutboxItem
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, chat_id, text, status, attempts, error_message, source, reply_to_message_id, sent_at, created_at, updated_at
+		SELECT id, chat_id, text, status, attempts, error_message, source, bot, reply_to_message_id, sent_at, created_at, updated_at
 		FROM outbox WHERE id = $1`, id,
-	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.ReplyToMessageID, &item.SentAt, &item.CreatedAt, &item.UpdatedAt)
+	).Scan(&item.ID, &item.ChatID, &item.Text, &item.Status, &item.Attempts, &item.ErrorMessage, &item.Source, &item.Bot, &item.ReplyToMessageID, &item.SentAt, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNoRows

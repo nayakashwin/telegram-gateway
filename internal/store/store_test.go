@@ -58,7 +58,7 @@ func TestOutboxReplyToRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	reply := int64(1234)
-	id, err := st.InsertOutbox(ctx, 42, "replying", "test", &reply)
+	id, err := st.InsertOutbox(ctx, 42, "replying", "test", "", &reply)
 	if err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestOutboxSendFlow(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, err := st.InsertOutbox(ctx, 42, "out", "test", nil)
+	id, err := st.InsertOutbox(ctx, 42, "out", "test", "", nil)
 	if err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestOutboxRetryBackoff(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, _ := st.InsertOutbox(ctx, 42, "retry me", "test", nil)
+	id, _ := st.InsertOutbox(ctx, 42, "retry me", "test", "", nil)
 	item, _ := st.ClaimNextOutbox(ctx, time.Now(), 30)
 	if err := st.MarkOutboxFailed(ctx, id, item.Attempts+1, 3, 30, "boom"); err != nil {
 		t.Fatalf("MarkOutboxFailed: %v", err)
@@ -165,7 +165,7 @@ func TestOutboxDeadLetter(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, _ := st.InsertOutbox(ctx, 42, "will die", "test", nil)
+	id, _ := st.InsertOutbox(ctx, 42, "will die", "test", "", nil)
 	item, _ := st.ClaimNextOutbox(ctx, time.Now(), 1)
 	if err := st.MarkOutboxFailed(ctx, id, item.Attempts+1, 1, 1, "fatal"); err != nil {
 		t.Fatalf("MarkOutboxFailed: %v", err)
@@ -184,7 +184,7 @@ func TestResetExpiredLocks(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, _ := st.InsertOutbox(ctx, 42, "stuck", "test", nil)
+	id, _ := st.InsertOutbox(ctx, 42, "stuck", "test", "", nil)
 	// Claim with a zero backoff, simulating a worker that died mid-send.
 	if _, err := st.ClaimNextOutbox(ctx, time.Now(), 0); err != nil {
 		t.Fatalf("claim: %v", err)
@@ -230,7 +230,7 @@ func TestNotifyFires(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 
-	if _, err := st.InsertOutbox(ctx, 42, "notify me", "test", nil); err != nil {
+	if _, err := st.InsertOutbox(ctx, 42, "notify me", "test", "", nil); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 
@@ -269,7 +269,7 @@ func TestOutboxListenerWakesOnInsert(t *testing.T) {
 		}
 	}
 
-	if _, err := st.InsertOutbox(ctx, 42, "wake me", "test", nil); err != nil {
+	if _, err := st.InsertOutbox(ctx, 42, "wake me", "test", "", nil); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 
@@ -321,7 +321,7 @@ func TestGetOutbox(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	id, err := st.InsertOutbox(ctx, 42, "track", "test", nil)
+	id, err := st.InsertOutbox(ctx, 42, "track", "test", "", nil)
 	if err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
@@ -345,8 +345,8 @@ func TestOutboxStatusCounts(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 
-	_, _ = st.InsertOutbox(ctx, 42, "one", "test", nil)
-	_, _ = st.InsertOutbox(ctx, 42, "two", "test", nil)
+	_, _ = st.InsertOutbox(ctx, 42, "one", "test", "", nil)
+	_, _ = st.InsertOutbox(ctx, 42, "two", "test", "", nil)
 
 	counts, err := st.OutboxStatusCounts(ctx)
 	if err != nil {

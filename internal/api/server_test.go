@@ -28,11 +28,11 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store) {
 	}
 
 	cfg := &config.Config{
-		TelegramToken: "test",
-		ChatIDs:       []int64{111},
-		DatabaseURL:   "ignored",
-		APIKey:        "0123456789abcdef",
-		APIAddress:    ":0",
+		Bots:        []config.Bot{{Name: "default", Token: "test"}},
+		ChatIDs:     []int64{111},
+		DatabaseURL: "ignored",
+		APIKey:      "0123456789abcdef",
+		APIAddress:  ":0",
 	}
 	st := testdb.NewStore(t)
 
@@ -120,6 +120,77 @@ func TestSendFlow(t *testing.T) {
 	id, ok := body["id"].(float64)
 	if !ok || id <= 0 {
 		t.Errorf("id = %v", body["id"])
+	}
+}
+
+func TestSendBotSelection(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping API integration test")
+	}
+	cfg := &config.Config{
+		Bots: []config.Bot{
+			{Name: "default", Token: "123456:TEST"},
+			{Name: "server_hunter_bot", Token: "654321:TEST"},
+		},
+		ChatIDs:     []int64{111},
+		DatabaseURL: "ignored",
+		APIKey:      "0123456789abcdef",
+		APIAddress:  ":0",
+	}
+	st := testdb.NewStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(New(cfg, st, logger, nil).Handler())
+	t.Cleanup(srv.Close)
+
+	// Unknown bot -> 400.
+	code, body := doReq(t, http.MethodPost, srv.URL+"/api/v1/send",
+		`{"chat_id":111,"text":"hi","bot":"nope"}`, "0123456789abcdef")
+	if code != http.StatusBadRequest {
+		t.Fatalf("unknown bot = %d, want 400 (body %v)", code, body)
+	}
+
+	// Named bot -> 202, response echoes the bot.
+	code, body = doReq(t, http.MethodPost, srv.URL+"/api/v1/send",
+		`{"chat_id":111,"text":"via hunter","bot":"server_hunter_bot"}`, "0123456789abcdef")
+	if code != http.StatusAccepted {
+		t.Fatalf("named bot send = %d, want 202 (body %v)", code, body)
+	}
+	if body["bot"] != "server_hunter_bot" {
+		t.Errorf("response bot = %v", body["bot"])
+	}
+	hunterID, ok := body["id"].(float64)
+	if !ok || hunterID <= 0 {
+		t.Fatalf("named bot id = %v", body["id"])
+	}
+
+	// Omitted bot -> resolves to default.
+	code, body = doReq(t, http.MethodPost, srv.URL+"/api/v1/send",
+		`{"chat_id":111,"text":"via default"}`, "0123456789abcdef")
+	if code != http.StatusAccepted {
+		t.Fatalf("default bot send = %d, want 202 (body %v)", code, body)
+	}
+	if body["bot"] != "default" {
+		t.Errorf("response bot = %v, want default", body["bot"])
+	}
+	defID, ok := body["id"].(float64)
+	if !ok || defID <= 0 {
+		t.Fatalf("default bot id = %v", body["id"])
+	}
+
+	// Persisted rows carry the bot name.
+	hunter, err := st.GetOutbox(context.Background(), int64(hunterID))
+	if err != nil {
+		t.Fatalf("GetOutbox(hunter): %v", err)
+	}
+	if hunter.Bot != "server_hunter_bot" {
+		t.Errorf("stored hunter bot = %q", hunter.Bot)
+	}
+	def, err := st.GetOutbox(context.Background(), int64(defID))
+	if err != nil {
+		t.Fatalf("GetOutbox(default): %v", err)
+	}
+	if def.Bot != "default" {
+		t.Errorf("stored default bot = %q", def.Bot)
 	}
 }
 
@@ -247,7 +318,7 @@ func TestQueryMessagesFilters(t *testing.T) {
 func TestGetOutboxByID(t *testing.T) {
 	srv, st := newTestServer(t)
 
-	id, err := st.InsertOutbox(context.Background(), 111, "track me", "test", nil)
+	id, err := st.InsertOutbox(context.Background(), 111, "track me", "test", "", nil)
 	if err != nil {
 		t.Fatalf("insert outbox: %v", err)
 	}
@@ -362,12 +433,12 @@ func TestRequestIDSanitized(t *testing.T) {
 
 func TestLegacyAPIKeyAccepted(t *testing.T) {
 	cfg := &config.Config{
-		TelegramToken: "123456:TEST",
-		ChatIDs:       []int64{111},
-		DatabaseURL:   "ignored",
-		APIKey:        "0123456789abcdef",
-		LegacyAPIKey:  "fedcba9876543210",
-		RateLimitRPS:  0, // disable for this test
+		Bots:         []config.Bot{{Name: "default", Token: "123456:TEST"}},
+		ChatIDs:      []int64{111},
+		DatabaseURL:  "ignored",
+		APIKey:       "0123456789abcdef",
+		LegacyAPIKey: "fedcba9876543210",
+		RateLimitRPS: 0, // disable for this test
 	}
 	st := testdb.NewStore(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -440,7 +511,7 @@ func TestConcurrencyLimit(t *testing.T) {
 
 func TestRateLimit(t *testing.T) {
 	cfg := &config.Config{
-		TelegramToken:  "123456:TEST",
+		Bots:           []config.Bot{{Name: "default", Token: "123456:TEST"}},
 		ChatIDs:        []int64{111},
 		DatabaseURL:    "ignored",
 		APIKey:         "0123456789abcdef",

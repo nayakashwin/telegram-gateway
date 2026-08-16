@@ -79,7 +79,7 @@ func newTestGateway(t *testing.T) (*Gateway, *fakeTelegram, *store.Store, *confi
 	}
 
 	cfg := &config.Config{
-		TelegramToken: "123456:TEST",
+		Bots:          []config.Bot{{Name: "default", Token: "123456:TEST"}},
 		ChatIDs:       []int64{111},
 		DatabaseURL:   "ignored",
 		APIKey:        "0123456789abcdef",
@@ -112,7 +112,7 @@ func TestPollLoopStoresIncomingAndAdvancesOffset(t *testing.T) {
 	}
 	fake.mu.Unlock()
 
-	go g.pollLoop(ctx)
+	go g.pollLoop(ctx, "default")
 	defer cancel()
 
 	// Wait until the two updates have been processed.
@@ -160,7 +160,7 @@ func TestInboundEndToEndThroughAPI(t *testing.T) {
 	}
 	fake.mu.Unlock()
 
-	go g.pollLoop(ctx)
+	go g.pollLoop(ctx, "default")
 	defer cancel()
 
 	// Wait for the poll loop to store the message.
@@ -203,10 +203,10 @@ func TestInboundEndToEndThroughAPI(t *testing.T) {
 func TestOutboxDeliverySuccess(t *testing.T) {
 	g, _, st, _ := newTestGateway(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	go g.pollLoop(ctx)
+	go g.pollLoop(ctx, "default")
 	defer cancel()
 
-	if _, err := st.InsertOutbox(ctx, 111, "hello out", "test", nil); err != nil {
+	if _, err := st.InsertOutbox(ctx, 111, "hello out", "test", "", nil); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestOutboxDeliveryFailureRetriesThenDead(t *testing.T) {
 	fake.sendFail = "chat not found"
 	fake.mu.Unlock()
 
-	id, err := st.InsertOutbox(ctx, 111, "doomed", "test", nil)
+	id, err := st.InsertOutbox(ctx, 111, "doomed", "test", "", nil)
 	if err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestMetricsObservedOnOutbox(t *testing.T) {
 	ctx := context.Background()
 
 	// Success path.
-	if _, err := st.InsertOutbox(ctx, 111, "metric one", "test", nil); err != nil {
+	if _, err := st.InsertOutbox(ctx, 111, "metric one", "test", "", nil); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 	g.processOutbox(ctx)
@@ -276,7 +276,7 @@ func TestMetricsObservedOnOutbox(t *testing.T) {
 	fake.mu.Lock()
 	fake.sendFail = "boom"
 	fake.mu.Unlock()
-	if _, err := st.InsertOutbox(ctx, 111, "metric two", "test", nil); err != nil {
+	if _, err := st.InsertOutbox(ctx, 111, "metric two", "test", "", nil); err != nil {
 		t.Fatalf("InsertOutbox: %v", err)
 	}
 	g.processOutbox(ctx)
